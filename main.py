@@ -1,14 +1,18 @@
 # main.py
+
 import os
 import time
 import logging
 import secrets
 import requests
-from typing import Tuple                # ← Tuple을 여기서 import
-from telegram import Bot, Update
+from typing import Tuple
+from telegram import Update
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler,
-    MessageHandler, filters, ContextTypes
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes
 )
 from dotenv import load_dotenv
 from translator import handle_translation
@@ -27,11 +31,6 @@ TUAPI_API_KEY    = os.getenv("TUAPI_API_KEY")
 TUAPI_API_SECRET = os.getenv("TUAPI_API_SECRET")
 
 logging.basicConfig(level=logging.INFO)
-
-# 봇 객체 생성 (Webhook 충돌 방지는 run_polling의 drop_pending_updates=True로 처리)
-bot = Bot(BOT_TOKEN)
-# ← 아래 줄을 제거했습니다. delete_webhook은 async이므로 module 레벨에서 await할 수 없어 경고가 발생합니다.
-# bot.delete_webhook(drop_pending_updates=True)
 
 def init_bot_data(app):
     app.bot_data.setdefault("payment_invoice", {})
@@ -68,7 +67,6 @@ def check_tuapi_deposit(order_id: str) -> float:
     ).json()
     if resp.get("code") != 0:
         raise RuntimeError("TuAPI 거래 조회 실패")
-    # value는 트론 단위(sun), 1e6 나눠서 USDT
     return sum(tx["value"] for tx in resp["data"]) / 1e6
 
 # ─────────────────────────────
@@ -85,8 +83,8 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        format_multilang(
+    text = (
+        "📌 Help – 다국어 안내 [한국어], [English], [中文], [ភាសាខ្មែរ], [Tiếng Việt]\n\n"
         "[한국어]\n"
         "/createcode – 3일 무료 코드 생성\n"
         "/registercode [코드] – 그룹에 코드 등록\n"
@@ -127,8 +125,8 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/extendcode – Gia hạn mã 3 ngày (tối đa 2 lần)\n"
         "/remaining – Kiểm tra thời gian còn lại\n"
         "/paymentcheck – Kiểm tra thanh toán / Gia hạn hoặc nhận địa chỉ"
-        )
     )
+    await update.message.reply_text(text)
 
 async def createcode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -144,7 +142,8 @@ async def createcode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 async def registercode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    args = ctx.args; gid = update.effective_chat.id
+    args = ctx.args
+    gid = update.effective_chat.id
     if not args or len(args[0]) != 6:
         return await update.message.reply_text("❗ /registercode [6자리 코드]")
     code = args[0]
@@ -193,7 +192,7 @@ async def solomode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def extendcode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     gid = update.effective_chat.id
     if database.extend_group(gid, duration_days=3, max_extends=2):
-        rem = database.group_remaining_seconds(gid)//86400
+        rem = database.group_remaining_seconds(gid) // 86400
         await update.message.reply_text(
             format_multilang(
                 f"🔁 코드 3일 연장 완료. 남은 기간: {rem}일",
@@ -247,7 +246,7 @@ async def paymentcheck(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     invoice = ctx.bot_data.setdefault("payment_invoice", {}).get(gid)
     paid = check_tuapi_deposit(invoice) if invoice else 0.0
     if paid >= PLAN_USD and database.extend_group(gid, duration_days=3, max_extends=2):
-        rem = database.group_remaining_seconds(gid)//86400
+        rem = database.group_remaining_seconds(gid) // 86400
         return await update.message.reply_text(
             format_multilang(
                 f"✅ {paid} USDT 결제 확인. 연장됨: {rem}일",
@@ -279,15 +278,18 @@ if __name__ == "__main__":
     init_bot_data(app)
 
     handlers = [
-        ("start", start), ("help", help_cmd),
-        ("createcode", createcode), ("registercode", registercode),
-        ("disconnect", disconnect), ("solomode", solomode),
-        ("extendcode", extendcode), ("remaining", remaining),
+        ("start", start),
+        ("help", help_cmd),
+        ("createcode", createcode),
+        ("registercode", registercode),
+        ("disconnect", disconnect),
+        ("solomode", solomode),
+        ("extendcode", extendcode),
+        ("remaining", remaining),
         ("paymentcheck", paymentcheck),
     ]
     for cmd, fn in handlers:
         app.add_handler(CommandHandler(cmd, fn))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
-    # drop_pending_updates=True 로 기존 업데이트 무시
     app.run_polling(drop_pending_updates=True)
