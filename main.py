@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 from translator import handle_translation
 import database
 
-# 환경변수 로드
+# 환경 변수 로드
 load_dotenv()
 BOT_TOKEN               = os.getenv("BOT_TOKEN")
 TRONGRID_API_KEY        = os.getenv("TRONGRID_API_KEY")
@@ -27,7 +27,7 @@ TRON_API_BASE           = "https://api.trongrid.io"
 
 logging.basicConfig(level=logging.INFO)
 
-# Polling 충돌 방지
+# Polling/Webhook 충돌 제거
 bot = Bot(BOT_TOKEN)
 bot.delete_webhook(drop_pending_updates=True)
 
@@ -36,6 +36,7 @@ def init_bot_data(app):
         app.bot_data["is_group_registered"] = {}
 
 def fetch_trc20_events(since_ms: int) -> list[dict]:
+    """TronGrid에서 since_ms 이후 발생한 TRC20 이벤트 조회"""
     url = f"{TRON_API_BASE}/v1/contracts/{TRC20_CONTRACT_ADDRESS}/events"
     params = {
         "only_confirmed": "true",
@@ -52,13 +53,13 @@ def fetch_trc20_events(since_ms: int) -> list[dict]:
         return []
     return res.json().get("data", [])
 
-# ─────────────────
-# 커맨드 핸들러
-# ─────────────────
+# ────────────────────────
+# 커맨드 핸들러 정의
+# ────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
-        "✅ 번역봇 작동 중. /help\n"
+        "✅ 번역봇이 작동 중입니다. /help 를 입력하세요.\n"
         "✅ Translation bot is running. Type /help\n"
         "✅ 翻译机器人运行中。请输入 /help\n"
         "✅ បុតនៃការបកប្រែកំពុងដំណើរការ។ ក្រាប់ /help\n"
@@ -70,45 +71,40 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📌 Help – 다국어 안내\n\n"
         "[한국어]\n"
-        "/createcode – 3일 무료 코드 생성\n"
-        "/registercode [코드]\n"
-        "/disconnect\n"
-        "/solomode\n"
-        "/extendcode\n"
-        "/remaining\n"
-        "/paymentcheck\n\n"
+        "/createcode       – 3일 무료 코드 생성\n"
+        "/registercode [코드] – 그룹에 코드 등록\n"
+        "/disconnect       – 연결 해제\n"
+        "/solomode         – 솔로 모드 (3일)\n"
+        "/extendcode       – 연장 요청 (30 USDT → 30일)\n"
+        "/remaining        – 남은 기간 확인\n\n"
         "[English]\n"
-        "/createcode – generate 3-day free code\n"
-        "/registercode [code]\n"
-        "/disconnect\n"
-        "/solomode\n"
-        "/extendcode\n"
-        "/remaining\n"
-        "/paymentcheck\n\n"
+        "/createcode       – generate 3-day free code\n"
+        "/registercode [code] – register code to this group\n"
+        "/disconnect       – disconnect group\n"
+        "/solomode         – start solo mode (3 days)\n"
+        "/extendcode       – request extension (30 USDT → 30 days)\n"
+        "/remaining        – check remaining time\n\n"
         "[中文]\n"
-        "/createcode – 生成 3 天免费代码\n"
-        "/registercode [代码]\n"
-        "/disconnect\n"
-        "/solomode\n"
-        "/extendcode\n"
-        "/remaining\n"
-        "/paymentcheck\n\n"
+        "/createcode       – 生成 3 天免费代码\n"
+        "/registercode [代码] – 在本群注册代码\n"
+        "/disconnect       – 取消连接\n"
+        "/solomode         – 独奏模式 (3 天)\n"
+        "/extendcode       – 申请延长 (30 USDT → 30 天)\n"
+        "/remaining        – 查看剩余时间\n\n"
         "[ភាសាខ្មែរ]\n"
-        "/createcode – បង្កើតកូដឥតគិតថ្លៃ 3 ថ្ងៃ\n"
-        "/registercode [កូដ]\n"
-        "/disconnect\n"
-        "/solomode\n"
-        "/extendcode\n"
-        "/remaining\n"
-        "/paymentcheck\n\n"
+        "/createcode       – បង្កើតកូដឥតគិតថ្លៃ 3 ថ្ងៃ\n"
+        "/registercode [កូដ] – ចុះបញ្ជីកូដទៅក្រុមនេះ\n"
+        "/disconnect       – ដកចេញពីការតភ្ជាប់\n"
+        "/solomode         – របៀបលេងឯកជន (3 ថ្ងៃ)\n"
+        "/extendcode       – សំណើការពន្យារ (30 USDT → 30 ថ្ងៃ)\n"
+        "/remaining        – ពិនិត្យពេលនៅសល់\n\n"
         "[Tiếng Việt]\n"
-        "/createcode – tạo mã miễn phí 3 ngày\n"
-        "/registercode [mã]\n"
-        "/disconnect\n"
-        "/solomode\n"
-        "/extendcode\n"
-        "/remaining\n"
-        "/paymentcheck"
+        "/createcode       – tạo mã miễn phí 3 ngày\n"
+        "/registercode [mã] – đăng ký mã cho nhóm này\n"
+        "/disconnect       – ngắt kết nối\n"
+        "/solomode         – chế độ solo (3 ngày)\n"
+        "/extendcode       – yêu cầu gia hạn (30 USDT → 30 ngày)\n"
+        "/remaining        – kiểm tra thời gian còn lại"
     )
 
 async def createcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -120,10 +116,10 @@ async def registercode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     gid = update.effective_chat.id
     if not args or len(args[0]) != 6:
-        return await update.message.reply_text("❗ Usage: /registercode [6-digit]")
+        return await update.message.reply_text("❗ Usage: /registercode [6-digit code]")
     code = args[0]
     if not database.is_code_valid(code):
-        return await update.message.reply_text("❌ 코드 유효하지 않거나 만료됨")
+        return await update.message.reply_text("❌ 코드가 유효하지 않거나 만료되었습니다.")
     if not database.register_group_to_code(code, gid):
         return await update.message.reply_text("⚠️ 이미 등록되었거나 제한초과")
     context.bot_data["is_group_registered"][gid] = True
@@ -140,7 +136,7 @@ async def solomode(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def extendcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     gid = update.effective_chat.id
     if not database.is_group_active(gid):
-        return await update.message.reply_text("❗ 먼저 코드 등록하세요")
+        return await update.message.reply_text("❗ 그룹에 등록된 코드가 없습니다.")
     if database.extend_group(gid, duration_days=30):
         rem = database.group_remaining_seconds(gid)
         days = rem // 86400
@@ -186,9 +182,7 @@ async def paymentcheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"✅ {amount} USDT 결제 확인. 30일 연장 완료. 남은 기간: {days}일"
             )
         else:
-            return await update.message.reply_text(
-                "⚠️ 이미 2회 연장되었습니다."
-            )
+            return await update.message.reply_text("⚠️ 이미 2회 연장되었습니다.")
     else:
         return await update.message.reply_text(
             f"❗ 최근 결제가 없습니다.\n30 USDT를 {TRC20_RECEIVER_ADDRESS}로 보내주세요."
@@ -199,12 +193,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.bot_data.get("is_group_registered", {}).get(gid):
         await handle_translation(update, context)
 
-# ───────────── Bot 실행 ─────────────
+# ──────── 봇 실행 ────────
 if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     init_bot_data(app)
 
-    # 커맨드 등록
+    # 커맨드 핸들러 등록
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("createcode", createcode))
@@ -215,7 +209,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("remaining", remaining))
     app.add_handler(CommandHandler("paymentcheck", paymentcheck))
 
-    # 메시지 핸들러
+    # 메시지 핸들러 등록
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
     logging.info("✅ 번역봇 실행 중...")
