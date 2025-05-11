@@ -1,5 +1,4 @@
 python-telegram-bot==20.0
-gtts
-langdetect
 requests
 python-dotenv
+google-cloud-translate
