@@ -1,14 +1,16 @@
 import os
 import time
 import logging
-import secrets
 import requests
 from typing import Tuple
-from telegram import Update
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup
+)
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     filters,
     ContextTypes
 )
@@ -20,20 +22,17 @@ import database
 # 환경 변수 및 로깅 설정
 # ───────────────────────────────
 load_dotenv()
-BOT_TOKEN        = os.getenv("BOT_TOKEN")
-GOOGLE_API_KEY   = os.getenv("GOOGLE_API_KEY")
-OWNER_SECRET     = os.getenv("OWNER_SECRET")
-PLAN_USD         = float(os.getenv("PLAN_USD", "30"))
-TUAPI_BASE_URL   = os.getenv("TUAPI_BASE_URL")
-TUAPI_API_KEY    = os.getenv("TUAPI_API_KEY")
-TUAPI_API_SECRET = os.getenv("TUAPI_API_SECRET")
+BOT_TOKEN      = os.getenv("BOT_TOKEN")
+PLAN_USD       = float(os.getenv("PLAN_USD", "30"))
+TUAPI_BASE_URL = os.getenv("TUAPI_BASE_URL")
+TUAPI_API_KEY  = os.getenv("TUAPI_API_KEY")
 
 logging.basicConfig(level=logging.INFO)
 
 def init_bot_data(app):
     app.bot_data.setdefault("payment_invoice", {})
 
-def format_multilang(ko: str, zh: str, km: str, vi: str) -> str:
+def format_multilang(ko, zh, km, vi) -> str:
     return (
         f"[한국어]\n{ko}\n\n"
         f"[中文]\n{zh}\n\n"
@@ -42,30 +41,27 @@ def format_multilang(ko: str, zh: str, km: str, vi: str) -> str:
     )
 
 # ───────────────────────────────
-# TUAPI 연동 함수
+# TUAPI 연동
 # ───────────────────────────────
-def generate_one_time_address_tuapi(gid: int) -> Tuple[str, str]:
-    """Tuapi로 1회용 입금 주소+주문ID 생성"""
+def generate_address(gid: int) -> Tuple[str, str]:
     url = f"{TUAPI_BASE_URL}/v1/trc20/address"
     headers = {"Authorization": f"Bearer {TUAPI_API_KEY}"}
     order_id = f"{gid}-{int(time.time())}"
-    res = requests.post(url, json={"orderId": order_id}, headers=headers, timeout=10).json()
+    res = requests.post(url, json={"orderId": order_id}, headers=headers).json()
     if res.get("code") != 0:
-        raise RuntimeError("TuAPI 주소 생성 실패")
+        raise RuntimeError("地址生成失败")
     return res["data"]["address"], res["data"]["orderId"]
 
-def check_tuapi_deposit(order_id: str) -> float:
-    """Tuapi로 해당 주문의 입금 합계 조회 (USDT 단위)"""
+def check_deposit(order_id: str) -> float:
     url = f"{TUAPI_BASE_URL}/v1/trc20/transaction"
     headers = {"Authorization": f"Bearer {TUAPI_API_KEY}"}
-    resp = requests.get(url, params={"orderId": order_id}, headers=headers, timeout=10).json()
+    resp = requests.get(url, params={"orderId": order_id}, headers=headers).json()
     if resp.get("code") != 0:
-        raise RuntimeError("TuAPI 거래 조회 실패")
-    # value는 트론 단위(sun), 1e6 나눠서 USDT
+        raise RuntimeError("交易查询失败")
     return sum(tx["value"] for tx in resp["data"]) / 1e6
 
 # ───────────────────────────────
-# Command Handlers
+# /start
 # ───────────────────────────────
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -77,91 +73,126 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
     )
 
+# ───────────────────────────────
+# /help (버튼+4개국어 텍스트)
+# ───────────────────────────────
 async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "📌 Help – 다국어 안내 [한국어], [English], [中文], [ភាសាខ្មែរ], [Tiếng Việt]\n\n"
+    help_text = (
         "[한국어]\n"
-        "/createcode – 3일 무료 코드 생성\n"
-        "/registercode [코드] – 그룹에 코드 등록\n"
-        "/disconnect – 연결 해제\n"
-        "/solomode – 솔로 모드 (3일)\n"
-        "/extendcode – 코드 3일 연장 (최대 2회)\n"
-        "/remaining – 남은 기간 확인\n"
-        "/paymentcheck – 결제 확인 및 연장/주소 발급\n\n"
-        "[English]\n"
-        "/createcode – Create 3-day free code\n"
-        "/registercode [code] – Register code in group\n"
-        "/disconnect – Disconnect\n"
-        "/solomode – Solo mode (3 days)\n"
-        "/extendcode – Extend code by 3 days (max 2)\n"
-        "/remaining – Check remaining time\n"
-        "/paymentcheck – Check payment / Extend or get address\n\n"
+        "/createcode   – 코드 생성 3일 (무료 1회, 이후 결제 필요)\n"
+        "/registercode – 명령어+코드 등록\n"
+        "/disconnect   – 등록된 코드 연결 해제\n"
+        "/extendcode   – 코드 3일 연장 (최대 1회)\n"
+        "/remaining    – 남은 기간 확인\n"
+        "/paymentcheck – 코드 연장/결제주소 발급\n\n"
         "[中文]\n"
-        "/createcode – 生成 3 天免费代码\n"
-        "/registercode [代码] – 在群组注册代码\n"
-        "/disconnect – 断开连接\n"
-        "/solomode – 独享模式（3 天）\n"
-        "/extendcode – 延长代码 3 天（最多 2 次）\n"
-        "/remaining – 查询剩余时间\n"
-        "/paymentcheck – 检查支付 / 延长或获取地址\n\n"
+        "/createcode   – 生成 3 天代码（免费1次，之后需付费）\n"
+        "/registercode – 命令+注册代码\n"
+        "/disconnect   – 取消已注册代码连接\n"
+        "/extendcode   – 延长代码 3 天（最多1次）\n"
+        "/remaining    – 查看剩余时间\n"
+        "/paymentcheck – 延长代码/支付地址生成\n\n"
         "[ភាសាខ្មែរ]\n"
-        "/createcode – បង្កើតកូដ 3 ថ្ងៃឥតគិតថ្លៃ\n"
-        "/registercode [កូដ] – ចុះបញ្ជីកូដក្នុងក្រុម\n"
-        "/disconnect – ផ្អាកការតភ្ជាប់\n"
-        "/solomode – ម៉ូដផ្ទាល់ខ្លួន (3 ថ្ងៃ)\n"
-        "/extendcode – ពន្យារកូដ 3 ថ្ងៃ (2 ដងអតិបរមា)\n"
-        "/remaining – ពិនិត្យមើលពេលនៅសល់\n"
-        "/paymentcheck – ពិនិត្យការទូទាត់ / ពន្យារឬទទួលអាសយដ្ឋាន\n\n"
+        "/createcode   – បង្កើតកូដ 3 ថ្ងៃ (ឥតគិតថ្លៃ1ដង, បន្ទាប់ត្រូវបង់ប្រាក់)\n"
+        "/registercode – បញ្ជារមុខងារ+ចុះបញ្ជីកូដ\n"
+        "/disconnect   – ផ្អាកការតភ្ជាប់កូដដែលបានចុះបញ្ជី\n"
+        "/extendcode   – ពន្យារកូដ 3 ថ្ងៃ (1ដងអតិបរមា)\n"
+        "/remaining    – ធ្វើការត្រួតពិនិត្យរយៈពេលនៅសល់\n"
+        "/paymentcheck – ពន្យារ/បញ្ចេញអាសយដ្ឋានទូទាត់\n\n"
         "[Tiếng Việt]\n"
-        "/createcode – Tạo mã miễn phí 3 ngày\n"
-        "/registercode [mã] – Đăng ký mã trong nhóm\n"
-        "/disconnect – Ngắt kết nối\n"
-        "/solomode – Chế độ solo (3 ngày)\n"
-        "/extendcode – Gia hạn mã 3 ngày (tối đa 2 lần)\n"
-        "/remaining – Kiểm tra thời gian còn lại\n"
-        "/paymentcheck – Kiểm tra thanh toán / Gia hạn hoặc nhận địa chỉ"
+        "/createcode   – Tạo mã 3 ngày (miễn phí 1 lần, sau đó cần trả phí)\n"
+        "/registercode – Lệnh+Đăng ký mã\n"
+        "/disconnect   – Hủy kết nối mã đã đăng ký\n"
+        "/extendcode   – Gia hạn mã 3 ngày (tối đa 1 lần)\n"
+        "/remaining    – Kiểm tra thời gian còn lại\n"
+        "/paymentcheck – Gia hạn mã/Phát địa chỉ thanh toán\n"
     )
-    await update.message.reply_text(text)
+    kb = [
+        [InlineKeyboardButton("CreateCode",   callback_data="btn_create")],
+        [InlineKeyboardButton("RegisterCode", callback_data="btn_register")],
+        [InlineKeyboardButton("Disconnect",   callback_data="btn_disconnect")],
+        [InlineKeyboardButton("ExtendCode",   callback_data="btn_extend")],
+        [InlineKeyboardButton("Remaining",    callback_data="btn_remaining")],
+        [InlineKeyboardButton("PaymentCheck", callback_data="btn_payment")],
+    ]
+    await update.message.reply_text(help_text, reply_markup=InlineKeyboardMarkup(kb))
 
+# ───────────────────────────────
+# 버튼 콜백
+# ───────────────────────────────
+async def button_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    cmd = query.data.split("_")[1]
+    if cmd == "create":
+        return await createcode(update, ctx)
+    if cmd == "register":
+        return await registercode(update, ctx)
+    if cmd == "disconnect":
+        return await disconnect(update, ctx)
+    if cmd == "extend":
+        return await extendcode(update, ctx)
+    if cmd == "remaining":
+        return await remaining(update, ctx)
+    if cmd == "payment":
+        return await paymentcheck(update, ctx)
+
+# ───────────────────────────────
+# /createcode
+# ───────────────────────────────
 async def createcode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    code = database.register_code(uid, duration_days=3)
+    user_id = update.effective_user.id
+    code = database.register_code(user_id)
+    if code is None:
+        return await update.message.reply_text(
+            format_multilang(
+                "⚠️ 무료 코드 발급 한도(1회) 초과",
+                "⚠️ 超过免费代码次数(1次)",
+                "⚠️ លើសកំណត់ឥតគិតថ្លៃ(1ដង)",
+                "⚠️ Vượt giới hạn miễn phí (1 lần)"
+            )
+        )
     await update.message.reply_text(
         format_multilang(
-            f"✅ 코드 생성: {code} (3일간 유효)",
+            f"✅ 코드 생성: {code} (3일간)",
             f"✅ 已创建代码: {code} (3天有效)",
             f"✅ បានបង្កើតកូដ: {code} (3ថ្ងៃ)",
             f"✅ Tạo mã: {code} (3 ngày)"
         )
     )
 
+# ───────────────────────────────
+# /registercode
+# ───────────────────────────────
 async def registercode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    args = ctx.args
-    gid = update.effective_chat.id
-    if not args or len(args[0]) != 6:
-        return await update.message.reply_text("❗ /registercode [6자리 코드]")
+    args    = ctx.args
+    chat_id = update.effective_chat.id
+    if not args:
+        return await update.message.reply_text("/registercode [code]")
     code = args[0]
-    if not database.register_group_to_code(code, gid, duration_days=3):
+    if not database.register_group_to_code(code, chat_id):
         return await update.message.reply_text(
             format_multilang(
-                "❌ 코드 유효하지 않거나 이미 등록됨",
-                "❌ 代码无效或已注册",
-                "❌ កូដមិនមានសុពលភាព ឬបានចុះបញ្ជីរួច",
-                "❌ Mã không hợp lệ hoặc đã đăng ký"
+                "❌ 코드 유효하지 않거나 그룹 초과",
+                "❌ 代码无效或组数已达上限",
+                "❌ កូដមិនមានសុពលភាព ឬក្រុមពេញ",
+                "❌ Mã không hợp lệ hoặc nhóm đầy"
             )
         )
     await update.message.reply_text(
         format_multilang(
-            f"✅ 그룹 등록 완료: {code} (3일간)",
-            f"✅ 群组注册完成: {code} (3天有效)",
-            f"✅ ក្រុមបានចុះបញ្ជី: {code} (3ថ្ងៃ)",
-            f"✅ Nhóm đã đăng ký: {code} (3 ngày)"
+            f"✅ 등록 완료: {code}",
+            f"✅ 注册完成: {code}",
+            f"✅ ចុះបញ្ជីរ: {code}",
+            f"✅ Đã đăng ký: {code}"
         )
     )
 
+# ───────────────────────────────
+# /disconnect
+# ───────────────────────────────
 async def disconnect(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    gid = update.effective_chat.id
-    database.disconnect_user(gid)
+    database.disconnect_user(update.effective_chat.id)
     await update.message.reply_text(
         format_multilang(
             "🔌 연결이 해제되었습니다.",
@@ -171,119 +202,113 @@ async def disconnect(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
     )
 
-async def solomode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    database.activate_solo_mode(uid, duration_days=3)
-    await update.message.reply_text(
-        format_multilang(
-            "✅ 솔로 모드 시작 (3일간)",
-            "✅ Solo 模式已启动 (3天)",
-            "✅ Solo Mode ចាប់ផ្តើម (3ថ្ងៃ)",
-            "✅ Bắt đầu solo mode (3 ngày)"
-        )
-    )
-
+# ───────────────────────────────
+# /extendcode
+# ───────────────────────────────
 async def extendcode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    gid = update.effective_chat.id
-    if database.extend_group(gid, duration_days=3, max_extends=2):
-        rem = database.group_remaining_seconds(gid) // 86400
+    cid = update.effective_chat.id
+    if database.extend_group(cid):
+        rem = database.group_remaining_seconds(cid) // 86400
         await update.message.reply_text(
             format_multilang(
-                f"🔁 코드 3일 연장 완료. 남은 기간: {rem}일",
-                f"🔁 代码已延长3天。剩余：{rem}天",
-                f"🔁 ពន្យារពេល 3 ថ្ងៃ. នៅសល់: {rem} ថ្ងៃ",
-                f"🔁 Gia hạn 3 ngày. Còn lại: {rem} ngày"
+                f"🔁 코드 연장 완료. 남은: {rem}일",
+                f"🔁 已延长. 剩余：{rem}天",
+                f"🔁 ពន្យារ. នៅសល់: {rem}ថ្ងៃ",
+                f"🔁 Đã gia hạn. Còn: {rem} ngày"
             )
         )
     else:
         await update.message.reply_text(
             format_multilang(
-                "⚠️ 연장 한도(2회) 초과",
-                "⚠️ 延长次数已达上限（2次）",
-                "⚠️ លើសកំណត់ពន្យារ(2ដង)",
-                "⚠️ Vượt giới hạn gia hạn (2 lần)"
+                "⚠️ 연장 실패",
+                "⚠️ 延长失败",
+                "⚠️ មិនអាចពន្យា",
+                "⚠️ Không thể gia hạn"
             )
         )
 
+# ───────────────────────────────
+# /remaining
+# ───────────────────────────────
 async def remaining(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    gid = update.effective_chat.id
-    sec = database.group_remaining_seconds(gid)
+    sec = database.group_remaining_seconds(update.effective_chat.id)
     if sec <= 0:
-        text = format_multilang(
+        msg = format_multilang(
             "❗ 등록된 코드가 없습니다.",
             "❗ 未注册代码。",
-            "❗ មិនមានកូដចុះបញ្ជី។",
-            "❗ Không có mã đăng ký."
+            "❗ មិនមានកូដ។",
+            "❗ Không có mã."
         )
     else:
-        d, h, m = sec // 86400, (sec % 86400) // 3600, (sec % 3600) // 60
-        text = format_multilang(
-            f"⏳ 남은 기간: {d}일 {h}시간 {m}분",
-            f"⏳ 剩余：{d}天 {h}小时 {m}分钟",
+        d, h, m = sec//86400, (sec%86400)//3600, (sec%3600)//60
+        msg = format_multilang(
+            f"⏳ 남은: {d}일 {h}시간 {m}분",
+            f"⏳ 剩余：{d}天 {h}时 {m}分",
             f"⏳ នៅសល់: {d}ថ្ងៃ {h}ម៉ោង {m}នាទី",
-            f"⏳ Còn lại: {d}ngày {h}giờ {m}phút"
+            f"⏳ Còn: {d}ngày {h}giờ {m}phút"
         )
-    await update.message.reply_text(text)
+    await update.message.reply_text(msg)
 
+# ───────────────────────────────
+# /paymentcheck
+# ───────────────────────────────
 async def paymentcheck(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    gid = update.effective_chat.id
-    if not database.is_group_active(gid):
+    cid = update.effective_chat.id
+    if not database.is_group_active(cid):
         return await update.message.reply_text(
             format_multilang(
                 "❗ 등록된 코드가 없습니다.",
                 "❗ 未注册代码。",
-                "❗ មិនមានកូដចុះបញ្ជី។",
-                "❗ Không có mã đăng ký."
+                "❗ មិនមានកូដ។",
+                "❗ Không có mã."
             )
         )
-
-    invoice = ctx.bot_data.setdefault("payment_invoice", {}).get(gid)
-    paid = check_tuapi_deposit(invoice) if invoice else 0.0
-    if paid >= PLAN_USD and database.extend_group(gid, duration_days=3, max_extends=2):
-        rem = database.group_remaining_seconds(gid) // 86400
+    inv = ctx.bot_data["payment_invoice"].get(cid)
+    paid = check_deposit(inv) if inv else 0.0
+    if paid >= PLAN_USD:
+        database.extend_group(cid)
+        rem = database.group_remaining_seconds(cid)//86400
         return await update.message.reply_text(
             format_multilang(
-                f"✅ {paid} USDT 결제 확인. 연장됨: {rem}일",
-                f"✅ 已支付 {paid} USDT。已延长：{rem}天",
-                f"✅ បានទទួល {paid} USDT។ ពន្យារជា: {rem}ថ្ងៃ",
-                f"✅ Đã nhận {paid} USDT. Gia hạn: {rem} ngày"
+                f"✅ 결제 확인. 남은: {rem}일",
+                f"✅ 支付成功。剩余：{rem}天",
+                f"✅ បានទូទាត់. នៅសល់: {rem}ថ្ងៃ",
+                f"✅ Thanh toán OK. Còn: {rem} ngày"
             )
         )
-
-    addr, inv = generate_one_time_address_tuapi(gid)
-    ctx.bot_data["payment_invoice"][gid] = inv
+    addr, order = generate_address(cid)
+    ctx.bot_data["payment_invoice"][cid] = order
     await update.message.reply_text(
         format_multilang(
-            f"❗ 결제 내역 없음\n송금할 USDT: {PLAN_USD}\n주소: {addr}",
-            f"❗ 未检测到支付\n请汇款：{PLAN_USD} USDT\n地址：{addr}",
-            f"❗ មិនមានការទូទាត់\nផ្ញើ USDT: {PLAN_USD}\nអាសយដ្ឋាន: {addr}",
-            f"❗ Không tìm thấy thanh toán\nGửi USDT: {PLAN_USD}\nĐịa chỉ: {addr}"
+            f"❗ 송금할 USDT: {PLAN_USD}\n주소: {addr}",
+            f"❗ 转账 {PLAN_USD} USDT → {addr}",
+            f"❗ សូមផ្ញើ {PLAN_USD} USDT → {addr}",
+            f"❗ Gửi USDT: {PLAN_USD} → {addr}"
         )
     )
 
 async def message_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    gid = update.effective_chat.id
-    if database.is_group_active(gid):
+    if database.is_group_active(update.effective_chat.id):
         await handle_translation(update, ctx)
 
+# ───────────────────────────────
+# 봇 구동
+# ───────────────────────────────
 if __name__ == "__main__":
     logging.info("✅ 번역봇 시작")
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     init_bot_data(app)
 
-    handlers = [
-        ("start", start),
-        ("help", help_cmd),
-        ("createcode", createcode),
-        ("registercode", registercode),
-        ("disconnect", disconnect),
-        ("solomode", solomode),
-        ("extendcode", extendcode),
-        ("remaining", remaining),
-        ("paymentcheck", paymentcheck),
-    ]
-    for cmd, fn in handlers:
-        app.add_handler(CommandHandler(cmd, fn))
-
+    # 핸들러 등록
+    app.add_handler(CommandHandler("start",      start))
+    app.add_handler(CommandHandler("help",       help_cmd))
+    app.add_handler(CallbackQueryHandler(button_cb))
+    app.add_handler(CommandHandler("createcode", createcode))
+    app.add_handler(CommandHandler("registercode", registercode))
+    app.add_handler(CommandHandler("disconnect", disconnect))
+    app.add_handler(CommandHandler("extendcode", extendcode))
+    app.add_handler(CommandHandler("remaining",  remaining))
+    app.add_handler(CommandHandler("paymentcheck", paymentcheck))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+
     app.run_polling(drop_pending_updates=True)
