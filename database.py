@@ -12,9 +12,6 @@ def generate_code() -> str:
     return f"{secrets.randbelow(900000) + 100000}"
 
 def register_code(owner_id: int, duration_days: int = 3, max_free: int = 1) -> str | None:
-    """
-    사용자당 무료 max_free 회수만큼만 발급.
-    """
     used = sum(1 for info in _codes.values() if info["owner"] == owner_id)
     if used >= max_free:
         return None
@@ -30,23 +27,16 @@ def is_code_valid(code: str) -> bool:
 # ────────────────────────────
 # 그룹 연결 관리
 # ────────────────────────────
-# group_id -> { code, expires, extend_count, connected }
 _groups: dict[int, dict] = {}
 
 def register_group_to_code(code: str, group_id: int, duration_days: int = 3) -> bool:
-    """
-    최초 연결: _groups 에 항목 생성.
-    재연결: connected=False 상태에서만 True, expires 변경 안 함.
-    """
     now = time.time()
     info = _groups.get(group_id)
     if info:
         if info["code"] != code or info["connected"]:
             return False
-        # 재연결: 단순히 connected=True 로만
         info["connected"] = True
         return True
-    # 신규 연결
     if not is_code_valid(code):
         return False
     _groups[group_id] = {
