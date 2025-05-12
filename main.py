@@ -107,16 +107,17 @@ async def helpowner_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "🔐 소유자 전용 명령어\n"
         "/auth <코드>                         – 소유자 인증\n"
         "/setcontrolgroup                   – 제어 그룹 지정\n"
-        "/setinquiry <ko>|<zh>|<km>|<vi>    – /paymentcheck 안내문 설정\n"
+        "/paymentcheck                      – 안내문 확인\n"
+        "/setinquiry <ko>|<zh>|<km>|<vi>    – 안내문 지정\n"
         "/helpowner                         – 소유자 도움말\n"
         "/listmaster                        – 연결된 그룹 목록\n"
         "/forcedisconnect <그룹ID>          – 강제 해제\n"
-        "/generateownercode <코드> <일수>    – 소유자 코드 생성\n"
+        "/generateownercode <코드> <일수> – 소유자 코드 생성\n"
         "/removeowner                       – 소유자 권한 해제\n"
         "/getlogs <그룹ID>                  – 메시지 로그 조회\n"
-        "/listcodelogs [코드]               – 코드 발급/사용/삭제 로그 조회\n"
+        "/listcodelogs [코드]   – 코드 발급/사용/삭제 로그 조회\n"
         "/deletecode <코드>                 – 코드 삭제\n"
-        "/extendissuedcode <코드> <일수>     – 코드 기한 연장\n"
+        "/extendissuedcode <코드> <일수>  – 코드 기한 연장\n"
     )
     await update.message.reply_text(text)
 
