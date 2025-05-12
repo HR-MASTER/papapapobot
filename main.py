@@ -5,11 +5,7 @@ import time
 import logging
 import requests
 from typing import Tuple
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -20,16 +16,17 @@ from telegram.ext import (
 )
 from dotenv import load_dotenv
 import database
+from translator import handle_translation
 
 # ───────────────────────────────
-# 환경 변수 및 로깅 설정
+# 환경 변수 및 로깅
 # ───────────────────────────────
 load_dotenv()
 BOT_TOKEN        = os.getenv("BOT_TOKEN")
+OWNER_SECRET     = os.getenv("OWNER_SECRET")
 PLAN_USD         = float(os.getenv("PLAN_USD", "30"))
 TUAPI_BASE_URL   = os.getenv("TUAPI_BASE_URL")
 TUAPI_API_KEY    = os.getenv("TUAPI_API_KEY")
-OWNER_SECRET     = os.getenv("OWNER_SECRET")
 
 logging.basicConfig(level=logging.INFO)
 
@@ -45,7 +42,7 @@ def format_multilang(ko, zh, km, vi) -> str:
     )
 
 # ───────────────────────────────
-# TUAPI 연동 함수
+# TUAPI 연동
 # ───────────────────────────────
 def generate_address(gid: int) -> Tuple[str, str]:
     url = f"{TUAPI_BASE_URL}/v1/trc20/address"
@@ -67,8 +64,8 @@ def check_deposit(order_id: str) -> float:
 # ───────────────────────────────
 # 소유자 인증 & 제어 그룹 설정
 # ───────────────────────────────
-OWNER_ID        = None
-CONTROL_GROUP   = None
+OWNER_ID      = None
+CONTROL_GROUP = None
 
 def owner_only(func):
     async def wrapper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -95,6 +92,19 @@ async def setcontrol_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     CONTROL_GROUP = update.effective_chat.id
     await update.message.reply_text("✅ 이 그룹을 제어 그룹으로 지정했습니다.")
 
+@owner_only
+async def helpowner_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "🔐 [소유자 전용 명령어]\n"
+        "/setcontrolgroup – 제어 그룹 지정\n"
+        "/helpowner       – 소유자 명령어 안내\n"
+        "/listmaster      – 연결된 그룹 목록\n"
+        "/forcedisconnect – 강제 해제\n"
+        "/generateownercode <코드> <일수> – 소유자 코드 생성\n"
+        "/removeowner     – 소유자 권한 해제"
+    )
+    await update.message.reply_text(text)
+
 # ───────────────────────────────
 # /start
 # ───────────────────────────────
@@ -109,7 +119,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 # ───────────────────────────────
-# /help (버튼+4개국어 안내)
+# /help (사용자용)
 # ───────────────────────────────
 async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     help_text = (
@@ -153,32 +163,26 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(help_text, reply_markup=InlineKeyboardMarkup(kb))
 
 # ───────────────────────────────
-# 버튼 콜백 핸들러
+# 버튼 콜백
 # ───────────────────────────────
 async def button_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     cmd = q.data.split("_")[1]
-    fake_update = Update(update.update_id, message=q.message, callback_query=q)
-    if cmd == "create":
-        return await createcode(fake_update, ctx)
-    if cmd == "register":
-        return await registercode(fake_update, ctx)
-    if cmd == "disconnect":
-        return await disconnect(fake_update, ctx)
-    if cmd == "extend":
-        return await extendcode(fake_update, ctx)
-    if cmd == "remaining":
-        return await remaining(fake_update, ctx)
-    if cmd == "payment":
-        return await paymentcheck(fake_update, ctx)
+    fake = Update(update.update_id, message=q.message, callback_query=q)
+    if cmd == "create":    return await createcode(fake, ctx)
+    if cmd == "register":  return await registercode(fake, ctx)
+    if cmd == "disconnect":return await disconnect(fake, ctx)
+    if cmd == "extend":    return await extendcode(fake, ctx)
+    if cmd == "remaining": return await remaining(fake, ctx)
+    if cmd == "payment":   return await paymentcheck(fake, ctx)
 
 # ───────────────────────────────
 # /createcode
 # ───────────────────────────────
 async def createcode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    code = database.register_code(user_id, duration_days=3)
+    uid  = update.effective_user.id
+    code = database.register_code(uid, duration_days=3, max_free=1)
     if code is None:
         return await update.message.reply_text(
             format_multilang(
@@ -202,7 +206,7 @@ async def createcode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ───────────────────────────────
 async def registercode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     args = ctx.args
-    gid = update.effective_chat.id
+    gid  = update.effective_chat.id
     if not args:
         return await update.message.reply_text("/registercode [code]")
     code = args[0]
@@ -217,10 +221,10 @@ async def registercode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
     await update.message.reply_text(
         format_multilang(
-            f"✅ 그룹 등록 완료: {code} (3일간)",
-            f"✅ 群组注册完成: {code} (3天有效)",
-            f"✅ ក្រុមបានចុះបញ្ជី: {code} (3ថ្ងៃ)",
-            f"✅ Nhóm đã đăng ký: {code} (3 ngày)"
+            f"✅ 등록 완료: {code} (유효 남은 {database.group_remaining_seconds(gid)//86400}일)",
+            f"✅ 注册完成: {code} (剩余 {database.group_remaining_seconds(gid)//86400}天)",
+            f"✅ បានចុះបញ្ជី: {code} (សល់ {database.group_remaining_seconds(gid)//86400}ថ្ងៃ)",
+            f"✅ Đã đăng ký: {code} (còn {database.group_remaining_seconds(gid)//86400} ngày)"
         )
     )
 
@@ -245,13 +249,13 @@ async def disconnect(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def extendcode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     gid = update.effective_chat.id
     if database.extend_group(gid, duration_days=3, max_extends=1):
-        rem = database.group_remaining_seconds(gid) // 86400
+        rem = database.group_remaining_seconds(gid)//86400
         await update.message.reply_text(
             format_multilang(
-                f"🔁 코드 연장 완료. 남은: {rem}일",
-                f"🔁 已延长. 剩余：{rem}天",
-                f"🔁 ពន្យារបាន. នៅសល់: {rem}ថ្ងៃ",
-                f"🔁 Đã gia hạn. Còn: {rem} ngày"
+                f"🔁 코드 연장 완료. 남은 {rem}일",
+                f"🔁 已延长. 剩余 {rem}天",
+                f"🔁 ពន្យារ. នៅសល់ {rem}ថ្ងៃ",
+                f"🔁 Đã gia hạn. Còn {rem} ngày"
             )
         )
     else:
@@ -260,7 +264,7 @@ async def extendcode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 "⚠️ 연장 한도(1회) 초과",
                 "⚠️ 超过延长次数(1次)",
                 "⚠️ លើសកំណត់ពន្យារ(1ដង)",
-                "⚠️ Vượt giới hạn gia hạn (1 lần)"
+                "⚠️ Vượt giới hạn (1 lần)"
             )
         )
 
@@ -292,36 +296,45 @@ async def remaining(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ───────────────────────────────
 async def paymentcheck(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     gid = update.effective_chat.id
-
-    # 그룹 등록 여부 체크
+    # 등록 여부
     if not database.is_group_active(gid):
         return await update.message.reply_text(
             format_multilang(
                 "❗ 등록된 코드가 없습니다.",
                 "❗ 未注册代码。",
-                "❗ មិនមានកូដ។",
+                "❗ មិនមានកូដ।",
                 "❗ Không có mã."
             )
         )
 
-    # 이전에 생성된 주문 ID 가져오기
     inv = ctx.bot_data["payment_invoice"].get(gid)
-    paid = check_deposit(inv) if inv else 0.0
+    paid = 0.0
+    if inv:
+        try:
+            paid = check_deposit(inv)
+        except:
+            return await update.message.reply_text(
+                format_multilang(
+                    "⚠️ 결제 확인 중 오류 발생",
+                    "⚠️ 支付检查出错",
+                    "⚠️ ពិនិត្យទូទាត់បរាជ័យ",
+                    "⚠️ Lỗi khi kiểm tra thanh toán"
+                )
+            )
 
-    # 일정 금액 이상 결제되었으면 연장
     if paid >= PLAN_USD:
         database.extend_group(gid, duration_days=3, max_extends=1)
         rem = database.group_remaining_seconds(gid)//86400
         return await update.message.reply_text(
             format_multilang(
-                f"✅ {paid} USDT 결제 확인. 남은: {rem}일",
-                f"✅ 已支付 {paid} USDT。剩余：{rem}天",
-                f"✅ បានទទួល {paid} USDT។ នៅសល់: {rem}ថ្ងៃ",
-                f"✅ Đã nhận {paid} USDT. Còn: {rem} ngày"
+                f"✅ {paid} USDT 결제 확인. 남은 {rem}일",
+                f"✅ 已支付 {paid} USDT。剩余 {rem}天",
+                f"✅ ទទួលបាន {paid} USDT។ នៅសល់ {rem}ថ្ងៃ",
+                f"✅ Đã nhận {paid} USDT. Còn {rem} ngày"
             )
         )
 
-    # 아직 결제 없으면 1회용 주소 발급
+    # 결제 전
     addr, order = generate_address(gid)
     ctx.bot_data["payment_invoice"][gid] = order
     await update.message.reply_text(
@@ -334,12 +347,11 @@ async def paymentcheck(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 # ───────────────────────────────
-# 메시지 핸들링 (번역)
+# 메시지 핸들링
 # ───────────────────────────────
 async def message_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     gid = update.effective_chat.id
     if database.is_group_active(gid):
-        from translator import handle_translation
         await handle_translation(update, ctx)
 
 # ───────────────────────────────
@@ -350,11 +362,12 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     init_bot_data(app)
 
-    # 소유자 인증/제어 명령
+    # 소유자 전용
     app.add_handler(CommandHandler("auth", auth_cmd))
     app.add_handler(CommandHandler("setcontrolgroup", setcontrol_cmd))
+    app.add_handler(CommandHandler("helpowner", helpowner_cmd))
 
-    # 일반 명령
+    # 사용자용
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CallbackQueryHandler(button_cb))
