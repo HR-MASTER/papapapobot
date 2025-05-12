@@ -4,7 +4,7 @@ import time
 import secrets
 
 # ────────────────────────────
-# 사용자 코드(소유자) 관리
+# 1) 사용자 코드(소유자) 관리
 # ────────────────────────────
 _codes: dict[str, dict] = {}
 
@@ -25,7 +25,7 @@ def is_code_valid(code: str) -> bool:
     return bool(info and info["expires"] >= time.time())
 
 # ────────────────────────────
-# 그룹 연결 관리
+# 2) 그룹 연결 관리
 # ────────────────────────────
 _groups: dict[int, dict] = {}
 
@@ -33,6 +33,7 @@ def register_group_to_code(code: str, group_id: int, duration_days: int = 3) -> 
     now = time.time()
     info = _groups.get(group_id)
     if info:
+        # 이미 한번 연결된 그룹은 재등록 시 연결만 활성화
         if info["code"] != code or info["connected"]:
             return False
         info["connected"] = True
@@ -69,3 +70,8 @@ def disconnect_user(group_id: int):
     info = _groups.get(group_id)
     if info:
         info["connected"] = False
+
+# ────────────────────────────
+# 3) 솔로모드 제거됨
+# ────────────────────────────
+# (더 이상 사용되지 않음)
