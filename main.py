@@ -20,12 +20,21 @@ from translator import handle_translation
 # 환경 변수 및 로깅 설정
 # ───────────────────────────────
 load_dotenv()
-BOT_TOKEN      = os.getenv("BOT_TOKEN")
-OWNER_SECRET   = os.getenv("OWNER_SECRET")
+BOT_TOKEN    = os.getenv("BOT_TOKEN")
+OWNER_SECRET = os.getenv("OWNER_SECRET")
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+# — Python 로깅: 콘솔 + 파일(chat.log)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+fh = logging.FileHandler("chat.log", encoding="utf-8")
+fh.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
+logger.addHandler(fh)
+ch = logging.StreamHandler()
+ch.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+logger.addHandler(ch)
 
 def init_bot_data(app):
+    # 연장 문의 메시지(4개국어)
     app.bot_data.setdefault("inquiry_msg", [
         "⏳ 기간 연장 문의 하기",
         "⏳ 请求续期",
@@ -34,6 +43,7 @@ def init_bot_data(app):
     ])
     # (timestamp, chat_id, user_id, username, message)
     app.bot_data.setdefault("user_logs", [])
+    # 코드 발급·사용·삭제·연장 로그
     app.bot_data.setdefault("code_logs", [])
 
 def format_multilang(ko, zh, km, vi) -> str:
@@ -56,13 +66,13 @@ def owner_only(func):
         chat = update.effective_chat
         if OWNER_ID is None or uid != OWNER_ID:
             return await update.message.reply_text("❌ 소유자 전용 명령입니다.")
-        # 개인(chat.type=="private")은 항상 허용
+        # 개인 대화는 항상 허용, 그룹은 CONTROL_GROUP에서만 허용
         if chat.type != "private" and CONTROL_GROUP is not None and chat.id != CONTROL_GROUP:
             return await update.message.reply_text("❌ 이 그룹에서만 사용할 수 있습니다.")
         return await func(update, ctx)
     return wrapper
 
-# — 인증
+# — 소유자 인증
 async def auth_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     global OWNER_ID
     if not ctx.args or ctx.args[0] != OWNER_SECRET:
@@ -115,7 +125,7 @@ async def helpowner_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(text)
 
-# — 그룹 목록
+# — 연결된 그룹 목록
 @owner_only
 async def listmaster_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lines = []
@@ -236,7 +246,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "✅ 번역봇이 작동 중입니다. /help 입력",
         "✅ Translation bot is running. Type /help",
         "✅ បុតនៃការបកប្រែកំពុងដំណើរការ។ វាយ /help",
-        "✅ Bot dịch đang hoạt động. GÕ /help"
+        "✅ Bot dịch đang hoạt động. Gõ /help"
     ))
 
 async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -257,7 +267,7 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/paymentcheck – 请求续期\n\n"
         "[ភាសាខ្មែរ]\n"
         "/createcode   – បង្កើតកូដ (ឥតគិតថ្លៃ3ថ្ងៃ)\n"
-        "/registercode – ​ក្រុមចុះបញ្ជីកូដ\n"
+        "/registercode – ក្រុមចុះបញ្ជីកូដ\n"
         "/disconnect   – ផ្តាច់ការតភ្ជាប់\n"
         "/extendcode   – ពន្យារកូដ3ថ្ងៃ (1ដង)\n"
         "/remaining    – ពិនិត្យរយៈពេលនៅសល់\n"
@@ -304,8 +314,12 @@ async def createcode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not code:
         return await update.message.reply_text("⚠️ 무료 코드 발급 한도(1회) 초과")
     ctx.bot_data["code_logs"].append({
-        "time": time.time(), "action": "issue_user",
-        "code": code, "owner_id": uid, "user_id": uid, "days": 3
+        "time": time.time(),
+        "action": "issue_user",
+        "code": code,
+        "owner_id": uid,
+        "user_id": uid,
+        "days": 3
     })
     await update.message.reply_text(f"✅ 코드 생성: {code} (3일간 유효)")
 
@@ -315,12 +329,99 @@ async def registercode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("/registercode [code]")
     code = args[0]
     if not database.register_group_to_code(code, gid):
-        return await update.message.reply_text("❌ 코드 유효하지 않거나 그룹 초과")
+        return await update.message_reply_text("❌ 코드 유효하지 않거나 그룹 초과")
     rem = database.group_remaining_seconds(gid) // 86400
     uname = update.effective_user.username or update.effective_user.full_name
     ctx.bot_data["code_logs"].append({
-        "time": time.time(), "action": "use",
-        "code": code, "user_id": uid, "group_id": gid
+        "time": time.time(),
+        "action": "use",
+        "code": code,
+        "user_id": update.effective_user.id,
+        "group_id": gid
     })
+    # 파일 로그에도 남기기
+    logger.info(f"{gid} | {update.effective_user.id}({uname}) | /registercode {code}")
+    # in-memory 로그
+    ctx бот_data["user_logs"].append((
+        time.time(), gid,
+        update.effective_user.id,
+        uname,
+        f"/registercode {code}"
+    ))
+    await update.message.reply_text(f"✅ 등록 완료: {code} (남은 {rem}일)")
+
+async def disconnect(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    gid = update.effective_chat.id
+    database.disconnect_user(gid)
+    logger.info(f"{gid} | disconnected")
+    await update.message.reply_text("🔌 연결이 해제되었습니다.")
+
+async def extendcode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    gid = update.effective_chat.id
+    if database.extend_group(gid, duration_days=3, max_extends=1):
+        rem = database.group_remaining_seconds(gid) // 86400
+        logger.info(f"{gid} | extendcode → 남은 {rem}일")
+        await update.message.reply_text(f"🔁 코드 연장 완료. 남은 {rem}일")
+    else:
+        return await update.message.reply_text("⚠️ 연장 한도(1회) 초과")
+
+async def remaining(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    gid = update.effective_chat.id
+    sec = database.group_remaining_seconds(gid)
+    if sec <= 0:
+        return await update.message_reply_text("❗ 등록된 코드가 없습니다.")
+    d, h, m = sec//86400, (sec%86400)//3600, (sec%3600)//60
+    await update.message.reply_text(f"⏳ 남은: {d}일 {h}시간 {m}분")
+
+async def paymentcheck(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ko, zh, km, vi = ctx.bot_data["inquiry_msg"]
+    await update.message.reply_text(format_multilang(ko, zh, km, vi))
+
+async def message_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    gid   = update.effective_chat.id
+    uid   = update.effective_user.id
+    uname = update.effective_user.username or update.effective_user.full_name
+    text  = update.message.text
+
+    # 1) 파일 로그
+    logger.info(f"{gid} | {uid}({uname}) | {text}")
+    # 2) in-memory 로그
     ctx.bot_data["user_logs"].append((
-        time<|diff_marker|> truncated
+        time.time(), gid, uid, uname, text
+    ))
+    # 3) 번역은 그룹 활성일 때만
+    if database.is_group_active(gid):
+        await handle_translation(update, ctx)
+
+if __name__ == "__main__":
+    logger.info("✅ 번역봇 시작")
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    init_bot_data(app)
+
+    # 소유자용
+    app.add_handler(CommandHandler("auth",             auth_cmd))
+    app.add_handler(CommandHandler("setcontrolgroup",  setcontrol_cmd))
+    app.add_handler(CommandHandler("setinquiry",       setinquiry_cmd))
+    app.add_handler(CommandHandler("helpowner",        helpowner_cmd))
+    app.add_handler(CommandHandler("listmaster",       listmaster_cmd))
+    app.add_handler(CommandHandler("forcedisconnect",  forcedisconnect_cmd))
+    app.add_handler(CommandHandler("generateownercode",generateownercode_cmd))
+    app.add_handler(CommandHandler("deletecode",       deletecode_cmd))
+    app.add_handler(CommandHandler("extendissuedcode", extendissuedcode_cmd))
+    app.add_handler(CommandHandler("listcodelogs",     listcodelogs_cmd))
+    app.add_handler(CommandHandler("getlogs",          getlogs_cmd))
+    app.add_handler(CommandHandler("listparticipants", listparticipants_cmd))
+
+    # 사용자용
+    app.add_handler(CommandHandler("start",       start))
+    app.add_handler(CommandHandler("help",        help_cmd))
+    app.add_handler(CallbackQueryHandler(button_cb))
+    app.add_handler(CommandHandler("createcode",   createcode))
+    app.add_handler(CommandHandler("registercode", registercode))
+    app.add_handler(CommandHandler("disconnect",   disconnect))
+    app.add_handler(CommandHandler("extendcode",   extendcode))
+    app.add_handler(CommandHandler("remaining",    remaining))
+    app.add_handler(CommandHandler("paymentcheck", paymentcheck))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+
+    app.run_polling(drop_pending_updates=True)
