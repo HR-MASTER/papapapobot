@@ -32,8 +32,10 @@ def init_bot_data(app):
         "⏳ ស្នើរសុំពន្យារពេល",
         "⏳ Yêu cầu gia hạn"
     ])
-    app.bot_data.setdefault("user_logs", [])   # (timestamp, group_id, user_id, username, message)
-    app.bot_data.setdefault("code_logs", [])   # 코드 발급·사용·삭제·연장 로그
+    # (timestamp, chat_id, user_id, username, message)
+    app.bot_data.setdefault("user_logs", [])
+    # 코드 발급·사용·삭제·연장 로그
+    app.bot_data.setdefault("code_logs", [])
 
 def format_multilang(ko, zh, km, vi) -> str:
     return (
@@ -44,7 +46,7 @@ def format_multilang(ko, zh, km, vi) -> str:
     )
 
 # ───────────────────────────────
-# 소유자 인증 및 제어 그룹
+# 소유자 인증 / 제어 그룹
 # ───────────────────────────────
 OWNER_ID      = None
 CONTROL_GROUP = None
@@ -75,7 +77,6 @@ async def setcontrol_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     prev = CONTROL_GROUP
     CONTROL_GROUP = update.effective_chat.id
     if prev and prev != CONTROL_GROUP:
-        # 이전 제어그룹에 해제 알림
         try:
             await ctx.bot.send_message(prev, "❌ 이 그룹은 더 이상 제어 그룹이 아닙니다.")
         except:
@@ -109,7 +110,8 @@ async def helpowner_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/deletecode <코드>                 – 코드 삭제\n"
         "/extendissuedcode <코드> <일수>     – 코드 기한 연장\n"
         "/listcodelogs [코드]               – 코드 로그 조회\n"
-        "/getlogs <그룹ID>                  – 메시지 로그 조회\n"
+        "/getlogs <그룹ID>                  – 채팅 로그 조회\n"
+        "/listparticipants <그룹ID>         – 그룹 참가자 목록 조회\n"
     )
     await update.message.reply_text(text)
 
@@ -204,10 +206,25 @@ async def getlogs_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(t))} | {uid}({uname}): {msg}"
         for t, group, uid, uname, msg in ctx.bot_data["user_logs"]
         if group == gid
-    ][-20:]
+    ][-50:]
     if not entries:
         return await update.message.reply_text("❗ 로그가 없습니다.")
     await update.message.reply_text("📝 최근 메시지 로그\n" + "\n".join(entries))
+
+# — 그룹 참가자 조회
+@owner_only
+async def listparticipants_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if len(ctx.args)!=1 or not ctx.args[0].isdigit():
+        return await update.message.reply_text("❗ 사용법: /listparticipants <그룹ID>")
+    gid = int(ctx.args[0])
+    seen = {}
+    for t, group, uid, uname, msg in ctx.bot_data["user_logs"]:
+        if group == gid:
+            seen[uid] = uname
+    if not seen:
+        return await update.message.reply_text("❗ 참가자가 없습니다.")
+    lines = [f"{uid} ({uname})" for uid, uname in seen.items()]
+    await update.message.reply_text("👥 그룹 참가자 목록\n" + "\n".join(lines))
 
 
 # ───────────────────────────────
@@ -242,7 +259,7 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/createcode   – បង្កើតកូដ (ឥតគិតថ្លៃ3ថ្ងៃ)\n"
         "/registercode – ក្រុមចុះបញ្ជីកូដ\n"
         "/disconnect   – ផ្តាច់ការតភ្ជាប់\n"
-        "/extendcode   – ពន្យារកូដ3ថ្ងៃ (1ដង)\n"
+        "/extendcode   –​ពន្យារកូដ3ថ្ងៃ (1ដង)\n"
         "/remaining    – ពិនិត្យរយៈពេលនៅសល់\n"
         "/paymentcheck – ស្នើរសុំពន្យារពេល\n\n"
         "[Tiếng Việt]\n"
@@ -287,30 +304,33 @@ async def createcode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not code:
         return await update.message.reply_text("⚠️ 무료 코드 발급 한도(1회) 초과")
     ctx.bot_data["code_logs"].append({
-        "time": time.time(), "action": "issue_user",
-        "code": code, "owner_id": uid, "user_id": uid, "days": 3
+        "time": time.time(),
+        "action": "issue_user",
+        "code": code,
+        "owner_id": uid,
+        "user_id": uid,
+        "days": 3
     })
     await update.message.reply_text(f"✅ 코드 생성: {code} (3일간 유효)")
 
 async def registercode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     args = ctx.args; gid = update.effective_chat.id
     if not args:
-        return await update.message.reply_text("/registercode [code]")
+        return await update.message_reply_text("/registercode [code]")
     code = args[0]
     if not database.register_group_to_code(code, gid):
-        return await update.message.reply_text("❌ 코드 유효하지 않거나 그룹 초과")
+        return await update.message_reply_text("❌ 코드 유효하지 않거나 그룹 초과")
     rem = database.group_remaining_seconds(gid) // 86400
     uname = update.effective_user.username or update.effective_user.full_name
     ctx.bot_data["code_logs"].append({
-        "time": time.time(), "action": "use",
-        "code": code, "user_id": update.effective_user.id,
+        "time": time.time(),
+        "action": "use",
+        "code": code,
+        "user_id": update.effective_user.id,
         "group_id": gid
     })
     ctx.bot_data["user_logs"].append((
-        time.time(), gid,
-        update.effective_user.id,
-        uname,
-        f"/registercode {code}"
+        time.time(), gid, update.effective_user.id, uname, f"/registercode {code}"
     ))
     await update.message.reply_text(f"✅ 등록 완료: {code} (남은 {rem}일)")
 
@@ -323,21 +343,21 @@ async def extendcode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         rem = database.group_remaining_seconds(update.effective_chat.id) // 86400
         await update.message.reply_text(f"🔁 코드 연장 완료. 남은 {rem}일")
     else:
-        await update.message.reply_text("⚠️ 연장 한도(1회) 초과")
+        await update.message_reply_text("⚠️ 연장 한도(1회) 초과")
 
 async def remaining(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     sec = database.group_remaining_seconds(update.effective_chat.id)
     if sec <= 0:
-        return await update.message.reply_text("❗ 등록된 코드가 없습니다.")
+        return await update.message_reply_text("❗ 등록된 코드가 없습니다.")
     d = sec // 86400; h = (sec % 86400)//3600; m = (sec %3600)//60
-    await update.message.reply_text(f"⏳ 남은: {d}일 {h}시간 {m}분")
+    await update.message_reply_text(f"⏳ 남은: {d}일 {h}시간 {m}분")
 
 async def paymentcheck(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ko, zh, km, vi = ctx.bot_data["inquiry_msg"]
-    await update.message.reply_text(format_multilang(ko, zh, km, vi))
+    await update.message_reply_text(format_multilang(ko, zh, km, vi))
 
 async def message_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    # 1) 채팅 로그는 그룹 활성 여부와 상관없이 기록
+    # 개인·그룹 로그 모두 수집
     gid = update.effective_chat.id
     uname = update.effective_user.username or update.effective_user.full_name
     ctx.bot_data["user_logs"].append((
@@ -346,7 +366,7 @@ async def message_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         uname,
         update.message.text
     ))
-    # 2) 번역은 그룹이 활성 상태일 때만
+    # 그룹이 활성일 때만 번역
     if database.is_group_active(gid):
         await handle_translation(update, ctx)
 
@@ -355,7 +375,7 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     init_bot_data(app)
 
-    # — 소유자용 핸들러
+    # 소유자용
     app.add_handler(CommandHandler("auth",             auth_cmd))
     app.add_handler(CommandHandler("setcontrolgroup",  setcontrol_cmd))
     app.add_handler(CommandHandler("setinquiry",       setinquiry_cmd))
@@ -367,8 +387,9 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("extendissuedcode", extendissuedcode_cmd))
     app.add_handler(CommandHandler("listcodelogs",     listcodelogs_cmd))
     app.add_handler(CommandHandler("getlogs",          getlogs_cmd))
+    app.add_handler(CommandHandler("listparticipants", listparticipants_cmd))
 
-    # — 사용자용 핸들러
+    # 사용자용
     app.add_handler(CommandHandler("start",       start))
     app.add_handler(CommandHandler("help",        help_cmd))
     app.add_handler(CallbackQueryHandler(button_cb))
