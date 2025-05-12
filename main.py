@@ -62,24 +62,22 @@ def check_deposit(order_id: str) -> float:
     resp = requests.get(url, params={"orderId": order_id}, headers=headers, timeout=10).json()
     if resp.get("code") != 0:
         raise RuntimeError("交易查询失败")
-    # value 단위는 sun, 1e6 으로 나눠 USDT
     return sum(tx["value"] for tx in resp["data"]) / 1e6
 
 # ───────────────────────────────
-# 소유자 인증 & 관리
+# 소유자 인증 & 제어 그룹 설정
 # ───────────────────────────────
-OWNER_ID = None
-CONTROL_GROUP = None
+OWNER_ID        = None
+CONTROL_GROUP   = None
 
 def owner_only(func):
     async def wrapper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        global OWNER_ID, CONTROL_GROUP
         uid = update.effective_user.id
         gid = update.effective_chat.id
         if OWNER_ID is None or uid != OWNER_ID:
             return await update.message.reply_text("❌ 소유자 전용 명령입니다.")
         if CONTROL_GROUP is None or gid != CONTROL_GROUP:
-            return await update.message.reply_text("❌ 이 그룹에서만 사용 가능합니다.")
+            return await update.message.reply_text("❌ 이 그룹에서만 사용할 수 있습니다.")
         return await func(update, ctx)
     return wrapper
 
@@ -87,9 +85,9 @@ async def auth_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     global OWNER_ID
     args = ctx.args
     if not args or args[0] != OWNER_SECRET:
-        return await update.message.reply_text("❌ 인증 실패")
+        return await update.message.reply_text("❌ 인증에 실패했습니다.")
     OWNER_ID = update.effective_user.id
-    await update.message.reply_text("✅ 소유자 인증 완료")
+    await update.message.reply_text("✅ 소유자 인증이 완료되었습니다.")
 
 @owner_only
 async def setcontrol_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -106,7 +104,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "✅ 번역봇이 작동 중입니다. /help 입력",
             "✅ 翻译机器人正在运行。请输入 /help",
             "✅ បុតនៃការបកប្រែកំពុងដំណើរការ។ វាយ /help",
-            "✅ Bot dịch đang hoạt động. Gõ /help"
+            "✅ Bot đang hoạt động. Gõ /help"
         )
     )
 
@@ -119,14 +117,14 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/createcode   – 코드 생성 (무료3일)\n"
         "/registercode – 그룹에 코드 등록\n"
         "/disconnect   – 연결 해제\n"
-        "/extendcode   – 코드 연장 3일 (최대1회)\n"
+        "/extendcode   – 코드 연장 3일 (1회)\n"
         "/remaining    – 남은 기간 확인\n"
         "/paymentcheck – 결제확인/주소발급\n\n"
         "[中文]\n"
         "/createcode   – 创建代码 (免费3天)\n"
         "/registercode – 群组注册代码\n"
         "/disconnect   – 断开连接\n"
-        "/extendcode   – 延长代码3天 (最多1次)\n"
+        "/extendcode   – 延长代码3天 (1次)\n"
         "/remaining    – 查看剩余时间\n"
         "/paymentcheck – 支付检查/地址生成\n\n"
         "[ភាសាខ្មែរ]\n"
@@ -142,7 +140,7 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/disconnect   – Ngắt kết nối\n"
         "/extendcode   – Gia hạn mã3ngày (1 lần)\n"
         "/remaining    – Kiểm tra thời gian còn lại\n"
-        "/paymentcheck – Kiểm tra thanh toán/địa chỉ\n"
+        "/paymentcheck – Thanh toán/địa chỉ\n"
     )
     kb = [
         [InlineKeyboardButton("CreateCode",   callback_data="btn_create")],
@@ -161,7 +159,6 @@ async def button_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     cmd = q.data.split("_")[1]
-    # 메시지 대신 callback_query 로 넘길 때는 .message 로 유효채팅 참조
     fake_update = Update(update.update_id, message=q.message, callback_query=q)
     if cmd == "create":
         return await createcode(fake_update, ctx)
@@ -186,8 +183,8 @@ async def createcode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text(
             format_multilang(
                 "⚠️ 무료 코드 발급 한도(1회) 초과",
-                "⚠️ 免费次数(1次)已用尽",
-                "⚠️ លើសកំណត់ (1ដង)",
+                "⚠️ 免费次数已用尽(1次)",
+                "⚠️ លើសកំណត់ឥតគិតថ្លៃ(1ដង)",
                 "⚠️ Hết lượt miễn phí (1 lần)"
             )
         )
@@ -295,6 +292,8 @@ async def remaining(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ───────────────────────────────
 async def paymentcheck(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     gid = update.effective_chat.id
+
+    # 그룹 등록 여부 체크
     if not database.is_group_active(gid):
         return await update.message.reply_text(
             format_multilang(
@@ -304,8 +303,12 @@ async def paymentcheck(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 "❗ Không có mã."
             )
         )
+
+    # 이전에 생성된 주문 ID 가져오기
     inv = ctx.bot_data["payment_invoice"].get(gid)
     paid = check_deposit(inv) if inv else 0.0
+
+    # 일정 금액 이상 결제되었으면 연장
     if paid >= PLAN_USD:
         database.extend_group(gid, duration_days=3, max_extends=1)
         rem = database.group_remaining_seconds(gid)//86400
@@ -317,6 +320,8 @@ async def paymentcheck(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"✅ Đã nhận {paid} USDT. Còn: {rem} ngày"
             )
         )
+
+    # 아직 결제 없으면 1회용 주소 발급
     addr, order = generate_address(gid)
     ctx.bot_data["payment_invoice"][gid] = order
     await update.message.reply_text(
@@ -334,6 +339,7 @@ async def paymentcheck(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def message_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     gid = update.effective_chat.id
     if database.is_group_active(gid):
+        from translator import handle_translation
         await handle_translation(update, ctx)
 
 # ───────────────────────────────
@@ -352,11 +358,11 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CallbackQueryHandler(button_cb))
-    app.add_handler(CommandHandler("createcode", createcode))
+    app.add_handler(CommandHandler("createcode",   createcode))
     app.add_handler(CommandHandler("registercode", registercode))
-    app.add_handler(CommandHandler("disconnect", disconnect))
-    app.add_handler(CommandHandler("extendcode", extendcode))
-    app.add_handler(CommandHandler("remaining", remaining))
+    app.add_handler(CommandHandler("disconnect",   disconnect))
+    app.add_handler(CommandHandler("extendcode",   extendcode))
+    app.add_handler(CommandHandler("remaining",    remaining))
     app.add_handler(CommandHandler("paymentcheck", paymentcheck))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
