@@ -12,7 +12,6 @@ def generate_code() -> str:
     return f"{secrets.randbelow(900000) + 100000}"
 
 def register_code(owner_id: int, duration_days: int = 3, max_free: int = 1) -> str | None:
-    # 사용자당 무료 코드 발급 최대 max_free 회
     used = sum(1 for info in _codes.values() if info["owner"] == owner_id)
     if used >= max_free:
         return None
@@ -34,7 +33,7 @@ def register_group_to_code(code: str, group_id: int, duration_days: int = 3) -> 
     now = time.time()
     info = _groups.get(group_id)
     if info:
-        # 이미 연결된 그룹이면 재등록 불가
+        # 이미 한번 연결된 그룹은 재등록 시 연결만 활성화
         if info["code"] != code or info["connected"]:
             return False
         info["connected"] = True
@@ -71,3 +70,8 @@ def disconnect_user(group_id: int):
     info = _groups.get(group_id)
     if info:
         info["connected"] = False
+
+# ────────────────────────────
+# 3) 솔로모드 제거됨
+# ────────────────────────────
+# (더 이상 사용되지 않음)
